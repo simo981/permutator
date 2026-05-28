@@ -587,7 +587,9 @@ static inline void swap_item(Item *a, Item *b)
 
 static void permute_emit(Out *out, Item *arr, size_t n)
 {
-    print_out(out, arr, n);
+    Item work[n];
+    memcpy(work, arr, sizeof(*work) * n);
+    print_out(out, work, n);
     if (n < 2) {
         return;
     }
@@ -597,8 +599,8 @@ static void permute_emit(Out *out, Item *arr, size_t n)
     while (i < n) {
         if (p[i] < i) {
             size_t j = (i & 1) ? p[i] : 0;
-            swap_item(&arr[i], &arr[j]);
-            print_out(out, arr, n);
+            swap_item(&work[i], &work[j]);
+            print_out(out, work, n);
             p[i]++;
             i = 1;
         } else {
