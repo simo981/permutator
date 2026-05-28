@@ -1,6 +1,5 @@
 #define _DARWIN_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
-#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -37,12 +36,14 @@ static int x_posix_fallocate(int fd, off_t offset, off_t len)
 
     if (fcntl(fd, F_PREALLOCATE, &store) < 0) {
         store.fst_flags = F_ALLOCATEALL;
-        if (fcntl(fd, F_PREALLOCATE, &store) < 0)
+        if (fcntl(fd, F_PREALLOCATE, &store) < 0) {
             return errno;
+        }
     }
 
-    if (ftruncate(fd, offset + len) < 0)
+    if (ftruncate(fd, offset + len) < 0) {
         return errno;
+    }
 
     return 0;
 #else
@@ -365,48 +366,41 @@ static void out_close(Out *o)
     o->fd = -1;
 }
 
-static inline void reverse_buf(char *s, size_t n)
+static inline void reverse_copy(char *restrict dst, const char *restrict src, size_t n)
 {
-    if (n < 2) {
-        return;
+    for (size_t i = 0; i < n; i++) {
+        dst[i] = src[n - 1 - i];
     }
-    char *a = s;
-    char *b = s + n - 1;
-    while (a < b) {
-        char t = *a;
-        *a++ = *b;
-        *b-- = t;
-    }
+    dst[n] = '\0';
 }
 
-static inline bool leet_encode(char *s)
+static inline bool leet_encode(char *s, size_t n)
 {
     bool changed = false;
-    for (unsigned char *p = (unsigned char *)s; *p; p++) {
-        unsigned char c = leet_map[*p];
-        if (c) {
-            *p = c;
-            changed = true;
-        }
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = leet_map[(unsigned char)s[i]];
+        changed |= c != 0;
+        s[i] = c ? (char)c : s[i];
     }
     return changed;
 }
 
-static inline bool upper_encode(char *s)
+static inline bool upper_encode(char *s, size_t n)
 {
     bool changed = false;
     if (bool_modifiers.upper_full) {
-        for (unsigned char *p = (unsigned char *)s; *p; p++) {
-            if (islower(*p)) {
-                *p = (unsigned char)toupper(*p);
-                changed = true;
-            }
+        for (size_t i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)s[i];
+            bool lower = c >= (unsigned char)'a' && c <= (unsigned char)'z';
+            changed |= lower;
+            s[i] = lower ? (char)(c - ((unsigned char)'a' - (unsigned char)'A')) : s[i];
         }
-    } else {
+    } else if (n > 0) {
         unsigned char c = (unsigned char)s[0];
-        if (islower(c)) {
-            s[0] = (char)toupper(c);
-            changed = true;
+        bool lower = c >= (unsigned char)'a' && c <= (unsigned char)'z';
+        changed = lower;
+        if (lower) {
+            s[0] = (char)(c - ((unsigned char)'a' - (unsigned char)'A'));
         }
     }
     return changed;
@@ -423,8 +417,7 @@ static void stage_reverse_full(Gen *g, char *s, size_t n, bool changed)
 {
     emit_final(g, s, n, changed);
     if (g->can_reverse && bool_modifiers.reverse_full) {
-        memcpy(g->revbuf, s, n + 1);
-        reverse_buf(g->revbuf, n);
+        reverse_copy(g->revbuf, s, n);
         emit_final(g, g->revbuf, n, true);
     }
 }
@@ -434,7 +427,7 @@ static void stage_upper(Gen *g, char *s, size_t n, bool changed)
     stage_reverse_full(g, s, n, changed);
     if (opt_has_upper) {
         memcpy(g->upperbuf, s, n + 1);
-        if (upper_encode(g->upperbuf)) {
+        if (upper_encode(g->upperbuf, n)) {
             stage_reverse_full(g, g->upperbuf, n, true);
         }
     }
@@ -445,7 +438,7 @@ static void stage_leet(Gen *g, char *s, size_t n, bool changed)
     stage_upper(g, s, n, changed);
     if (opt_has_leet) {
         memcpy(g->leetbuf, s, n + 1);
-        if (leet_encode(g->leetbuf)) {
+        if (leet_encode(g->leetbuf, n)) {
             stage_upper(g, g->leetbuf, n, true);
         }
     }
@@ -543,8 +536,7 @@ static void print_out_transform(Out *out, Item *arr, size_t size)
     stage_last(&g, base, run_len, false);
     if (g.can_reverse && bool_modifiers.reverse_words) {
         char seed[BUFF];
-        memcpy(seed, base, run_len + 1);
-        reverse_buf(seed, run_len);
+        reverse_copy(seed, base, run_len);
         stage_last(&g, seed, run_len, true);
     }
     if (!need_offsets) {
