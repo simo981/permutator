@@ -1,0 +1,219 @@
+
+name: Valgrind
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "Makefile"
+      - "src/Makefile"
+      - ".github/workflows/valgrind.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "Makefile"
+      - "src/Makefile"
+      - ".github/workflows/valgrind.yml"
+  merge_group:
+    types: [checks_requested]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  valgrind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends valgrind
+
+      - name: Build debug binary
+        run: make clean all CC=gcc CFLAGS="-O1 -g -std=c17 -Wall -Wextra -Wpedantic"
+
+      - name: Valgrind regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VG=(
+            valgrind
+            --error-exitcode=1
+            --leak-check=full
+            --show-leak-kinds=definite,indirect,possible
+            --errors-for-leak-kinds=definite,indirect,possible
+            --track-origins=yes
+            --track-fds=yes
+          )
+
+          run_vg() {
+            local name="$1"
+            shift
+            "${VG[@]}" ./seqperm "$@" --output "${name}.txt"
+            test -f "${name}.txt"
+          }
+
+          assert_lines() {
+            local file="$1"
+            local expected="$2"
+            local got
+            got="$(wc -l < "$file" | tr -d ' ')"
+            test "$got" = "$expected" || {
+              echo "bad line count for $file: got $got, expected $expected" >&2
+              exit 1
+            }
+          }
+
+          assert_contains() {
+            local file="$1"
+            local needle="$2"
+            grep -Fx -- "$needle" "$file" >/dev/null || {
+              echo "missing line in $file: $needle" >&2
+              echo "--- $file ---" >&2
+              cat "$file" >&2
+              exit 1
+            }
+          }
+
+          assert_unique_lines() {
+            local file="$1"
+            local total unique
+            total="$(wc -l < "$file" | tr -d ' ')"
+            unique="$(sort "$file" | uniq | wc -l | tr -d ' ')"
+            test "$total" = "$unique" || {
+              echo "duplicate lines in $file: total $total, unique $unique" >&2
+              exit 1
+            }
+          }
+
+          # P(3,1) + P(3,2) = 3 + 6 = 9.
+          run_vg plain_range --start 1 --end 2 a b c
+          assert_lines plain_range.txt 9
+          assert_unique_lines plain_range.txt
+          assert_contains plain_range.txt a
+          assert_contains plain_range.txt ab
+          assert_contains plain_range.txt ba
+
+          # P(3,3) = 6.
+          run_vg plain_exact --start 3 --end 3 a b c
+          assert_lines plain_exact.txt 6
+          assert_unique_lines plain_exact.txt
+          assert_contains plain_exact.txt abc
+          assert_contains plain_exact.txt cba
+
+          # One comma-form token expands to two token forms.
+          # selected size 1: "tit" and "titor".
+          run_vg comma_single --start 1 --end 1 tit,or
+          assert_lines comma_single.txt 2
+          assert_unique_lines comma_single.txt
+          assert_contains comma_single.txt tit
+          assert_contains comma_single.txt titor
+
+          # Subsets of size 2 from {john, tit,or}: one subset, 2! orderings, 2 comma variants = 4.
+          run_vg comma_pair --start 2 --end 2 john tit,or
+          assert_lines comma_pair.txt 4
+          assert_unique_lines comma_pair.txt
+          assert_contains comma_pair.txt johntit
+          assert_contains comma_pair.txt titjohn
+          assert_contains comma_pair.txt johntitor
+          assert_contains comma_pair.txt titorjohn
+
+          # Connectors: base + (k - 1) * c = 1 + 1 * 2 = 3 per permutation; P(2,2)=2 => 6.
+          run_vg connectors --start 2 --end 2 --connectors ._ a b
+          assert_lines connectors.txt 6
+          assert_unique_lines connectors.txt
+          assert_contains connectors.txt ab
+          assert_contains connectors.txt a.b
+          assert_contains connectors.txt a_b
+          assert_contains connectors.txt ba
+          assert_contains connectors.txt b.a
+          assert_contains connectors.txt b_a
+
+          # Last suffixes: base + 2 suffixes = 3 per permutation; P(2,2)=2 => 6.
+          run_vg suffixes --start 2 --end 2 --last 1,22 a b
+          assert_lines suffixes.txt 6
+          assert_unique_lines suffixes.txt
+          assert_contains suffixes.txt ab
+          assert_contains suffixes.txt ab1
+          assert_contains suffixes.txt ab22
+          assert_contains suffixes.txt ba
+          assert_contains suffixes.txt ba1
+          assert_contains suffixes.txt ba22
+
+          # only_transformations with suffixes suppresses base lines.
+          run_vg only_suffixes --start 2 --end 2 --only_transformations --last 1,22 a b
+          assert_lines only_suffixes.txt 4
+          assert_unique_lines only_suffixes.txt
+          assert_contains only_suffixes.txt ab1
+          assert_contains only_suffixes.txt ab22
+          assert_contains only_suffixes.txt ba1
+          assert_contains only_suffixes.txt ba22
+          ! grep -Fx -- ab only_suffixes.txt
+          ! grep -Fx -- ba only_suffixes.txt
+
+          # Upper first: base + transformed where first char is lowercase.
+          run_vg upper_first --start 1 --end 1 --upper first abc
+          assert_lines upper_first.txt 2
+          assert_unique_lines upper_first.txt
+          assert_contains upper_first.txt abc
+          assert_contains upper_first.txt Abc
+
+          # Upper full: base + full uppercase.
+          run_vg upper_full --start 1 --end 1 --upper full abC
+          assert_lines upper_full.txt 2
+          assert_unique_lines upper_full.txt
+          assert_contains upper_full.txt abC
+          assert_contains upper_full.txt ABC
+
+          # Leet vowel: base + transformed.
+          run_vg leet_vowel --start 1 --end 1 --leet vowel simo
+          assert_lines leet_vowel.txt 2
+          assert_unique_lines leet_vowel.txt
+          assert_contains leet_vowel.txt simo
+          assert_contains leet_vowel.txt s1m0
+
+          # Leet full: includes non-vowel replacements.
+          run_vg leet_full --start 1 --end 1 --leet full stgz
+          assert_lines leet_full.txt 2
+          assert_unique_lines leet_full.txt
+          assert_contains leet_full.txt stgz
+          assert_contains leet_full.txt 5792
+
+          # Reverse full on a non-palindrome: base + reversed.
+          run_vg reverse_full --start 1 --end 1 --reverse full abc
+          assert_lines reverse_full.txt 2
+          assert_unique_lines reverse_full.txt
+          assert_contains reverse_full.txt abc
+          assert_contains reverse_full.txt cba
+
+          # Reverse is skipped for one-char-only selected sets.
+          run_vg reverse_useless_onechar --start 2 --end 2 --reverse full a b
+          assert_lines reverse_useless_onechar.txt 2
+          assert_unique_lines reverse_useless_onechar.txt
+          assert_contains reverse_useless_onechar.txt ab
+          assert_contains reverse_useless_onechar.txt ba
+
+          # Compatibility flag must not change behavior.
+          run_vg memory_flag --memory --start 2 --end 2 a b c
+          assert_lines memory_flag.txt 6
+          assert_unique_lines memory_flag.txt
+
+          # Combined path: comma expansion + connectors + suffixes + upper + leet + reverse + only_transformations.
+          run_vg combined \
+            --start 1 --end 3 \
+            --reverse full \
+            --upper full \
+            --leet full \
+            --only_transformations \
+            --last 2024,001,1 \
+            --connectors .,- \
+            hi how ar,e you
+          test -s combined.txt

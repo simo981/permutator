@@ -1,0 +1,73 @@
+name: C CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "Makefile"
+      - ".github/workflows/c-cpp.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "Makefile"
+      - ".github/workflows/c-cpp.yml"
+  merge_group:
+    types: [checks_requested]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.cc }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cc: gcc
+          - os: ubuntu-latest
+            cc: clang
+          - os: macos-latest
+            cc: clang
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release
+        run: make clean all CC=${{ matrix.cc }}
+
+      - name: Smoke test plain permutations
+        run: |
+          ./seqperm --start 2 --end 2 --output plain.txt a b c
+          test "$(wc -l < plain.txt | tr -d ' ')" = "6"
+
+      - name: Smoke test modifiers
+        run: |
+          ./seqperm --start 1 --end 2 \
+            --output out.txt \
+            --upper first \
+            --leet vowel \
+            --connectors '._-' \
+            --last '1,!' \
+            john tit,or ibm
+          test -s out.txt
+
+      - name: Build sanitizer
+        run: make clean all CC=${{ matrix.cc }} CFLAGS="-O1 -g -std=c11 -Wall -Wextra -fsanitize=address,undefined"
+
+      - name: Sanitizer smoke test
+        run: |
+          ./seqperm --start 1 --end 2 \
+            --output asan.txt \
+            --upper first \
+            --leet vowel \
+            --connectors '._-' \
+            --last '1,!' \
+            john tit,or ibm
+          test -s asan.txt
