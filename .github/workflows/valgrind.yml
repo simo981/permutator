@@ -57,7 +57,7 @@ jobs:
           run_vg() {
             local name="$1"
             shift
-            "${VG[@]}" ./seqperm "$@" --output "${name}.txt"
+            "${VG[@]}" ./permutator "$@" --output "${name}.txt"
             test -f "${name}.txt"
           }
 

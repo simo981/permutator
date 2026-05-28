@@ -44,12 +44,12 @@ jobs:
 
       - name: Smoke test plain permutations
         run: |
-          ./seqperm --start 2 --end 2 --output plain.txt a b c
+          ./permutator --start 2 --end 2 --output plain.txt a b c
           test "$(wc -l < plain.txt | tr -d ' ')" = "6"
 
       - name: Smoke test modifiers
         run: |
-          ./seqperm --start 1 --end 2 \
+          ./permutator --start 1 --end 2 \
             --output out.txt \
             --upper first \
             --leet vowel \
@@ -63,7 +63,7 @@ jobs:
 
       - name: Sanitizer smoke test
         run: |
-          ./seqperm --start 1 --end 2 \
+          ./permutator --start 1 --end 2 \
             --output asan.txt \
             --upper first \
             --leet vowel \
