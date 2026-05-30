@@ -97,6 +97,7 @@ typedef struct {
     size_t cap;
     off_t written;
     off_t advised;
+    bool truncate_on_close;
 } Out;
 
 typedef struct {
@@ -125,6 +126,7 @@ static bool opt_has_reverse = false;
 static bool opt_has_mutating = false;
 static bool opt_has_last = false;
 static bool opt_has_connectors = false;
+static bool opt_repeat = false;
 
 static void die(const char *s)
 {
@@ -333,14 +335,16 @@ static inline void out_line_connector_last(
 
 static void out_open(Out *o, const char *path, char *buf, size_t cap, off_t reserve)
 {
-    o->fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    bool null_output = !strcmp(path, "-");
+    o->fd = open(null_output ? "/dev/null" : path, null_output ? O_WRONLY : (O_RDWR | O_CREAT | O_TRUNC), 0644);
     if (o->fd < 0) {
         die("open");
     }
+    o->truncate_on_close = !null_output;
 #if defined(POSIX_FADV_SEQUENTIAL)
     (void)posix_fadvise(o->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 #endif
-    if (reserve > 0) {
+    if (!null_output && reserve > 0) {
         int e = x_posix_fallocate(o->fd, 0, reserve);
         if (e) {
             errno = e;
@@ -357,7 +361,7 @@ static void out_open(Out *o, const char *path, char *buf, size_t cap, off_t rese
 static void out_close(Out *o)
 {
     out_flush(o);
-    if (ftruncate(o->fd, o->written) < 0) {
+    if (o->truncate_on_close && ftruncate(o->fd, o->written) < 0) {
         die("ftruncate");
     }
     if (close(o->fd) < 0) {
@@ -619,10 +623,34 @@ static void expand_comma_variants(Out *out, Word **selected, size_t idx, size_t 
     expand_comma_variants(out, selected, idx + 1, n, items);
 }
 
+static void expand_comma_variants_ordered(Out *out, Word **selected, size_t idx, size_t n, Item *items)
+{
+    if (idx == n) {
+        print_out(out, items, n);
+        return;
+    }
+    Word *w = selected[idx];
+    if (!w->has_comma) {
+        word_raw_item(w, &items[idx]);
+        expand_comma_variants_ordered(out, selected, idx + 1, n, items);
+        return;
+    }
+    word_p1_item(w, &items[idx]);
+    expand_comma_variants_ordered(out, selected, idx + 1, n, items);
+    word_p2_item(w, &items[idx]);
+    expand_comma_variants_ordered(out, selected, idx + 1, n, items);
+}
+
 static void emit_selected(Out *out, Word **selected, size_t n)
 {
     Item items[n];
     expand_comma_variants(out, selected, 0, n, items);
+}
+
+static void emit_selected_ordered(Out *out, Word **selected, size_t n)
+{
+    Item items[n];
+    expand_comma_variants_ordered(out, selected, 0, n, items);
 }
 
 static void gen_subsets(Out *out, size_t idx, size_t cur, Word **selected)
@@ -644,6 +672,25 @@ static void gen_subsets(Out *out, size_t idx, size_t cur, Word **selected)
     if (cur < max_len) {
         selected[cur] = &words[idx];
         gen_subsets(out, idx + 1, cur + 1, selected);
+    }
+}
+
+static void gen_repeats_exact(Out *out, size_t target, size_t pos, Word **selected)
+{
+    if (pos == target) {
+        emit_selected_ordered(out, selected, target);
+        return;
+    }
+    for (size_t i = 0; i < word_size; i++) {
+        selected[pos] = &words[i];
+        gen_repeats_exact(out, target, pos + 1, selected);
+    }
+}
+
+static void gen_repeats(Out *out, Word **selected)
+{
+    for (size_t n = min_len; n <= max_len; n++) {
+        gen_repeats_exact(out, n, 0, selected);
     }
 }
 
@@ -774,6 +821,7 @@ static struct option long_options[] = {
     {"start", required_argument, 0, 's'},
     {"end", required_argument, 0, 'e'},
     {"output", required_argument, 0, 'o'},
+    {"repeat", no_argument, 0, 'R'},
     {0, 0, 0, 0}
 };
 
@@ -783,7 +831,7 @@ int main(int argc, char **argv)
     int option_index = 0;
     const char *out_path = "out.txt";
 
-    while ((c = getopt_long(argc, argv, "u:l:pk:c:s:e:r:o:x", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "u:l:pk:c:s:e:r:o:xR", long_options, &option_index)) != -1) {
         switch (c) {
         case 'r': {
             if (!strcmp(optarg, "full")) {
@@ -822,6 +870,10 @@ int main(int argc, char **argv)
         case 'x': {
             break;
         }
+        case 'R': {
+            opt_repeat = true;
+            break;
+        }
         case 'c': {
             connector_chars = optarg;
             connectors_size = strlen(optarg);
@@ -858,7 +910,7 @@ int main(int argc, char **argv)
         diex("max_len must be >= min_len");
     }
     parse_words(argv, optind, argc);
-    if (max_len > word_size) {
+    if (!opt_repeat && max_len > word_size) {
         max_len = word_size;
     }
     init_leet();
@@ -867,7 +919,11 @@ int main(int argc, char **argv)
     Out out;
     out_open(&out, out_path, outbuf, sizeof outbuf, OUT_PREALLOC_SIZE);
     Word *selected[max_len];
-    gen_subsets(&out, 0, 0, selected);
+    if (opt_repeat) {
+        gen_repeats(&out, selected);
+    } else {
+        gen_subsets(&out, 0, 0, selected);
+    }
     out_close(&out);
     free_words();
     free(last);
